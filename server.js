@@ -2,7 +2,7 @@ const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
-const webpush = require('web-push'); // Adicionado para notificações Push
+const webpush = require('web-push');
 
 const app = express();
 
@@ -11,7 +11,6 @@ app.use(cors());
 app.use(express.json());
 
 // --- CONFIGURAÇÃO WEB PUSH ---
-// Substitua essas chaves pelas suas (Gere com: webpush.generateVAPIDKeys())
 const publicVapidKey = 'BGJ6TON0nIcsUzfW7oD-mjyziRuEIz7WbRen612Ke6S7GmS_AbzZuQ8wKeIYNZsLUmzXNqfnQHWIyvRLKYDVhSM';
 const privateVapidKey = '0_PV3hASQU70wlmus8i9gBGBovXvrt4Av4qJSxe6GkY';
 
@@ -21,14 +20,14 @@ webpush.setVapidDetails(
   privateVapidKey
 );
 
-// Armazenamento temporário de inscrições (Em produção, use um Banco de Dados)
+// Armazenamento temporário de inscrições
 let subscriptions = [];
 
-// Rota para o celular se inscrever nas notificações
+// Rota para o celular se inscrever
 app.post('/subscribe', (req, res) => {
   const subscription = req.body;
   
-  // Evitar duplicados
+  // Evitar duplicados por endpoint
   const exists = subscriptions.find(s => s.endpoint === subscription.endpoint);
   if (!exists) {
     subscriptions.push(subscription);
@@ -38,7 +37,7 @@ app.post('/subscribe', (req, res) => {
   res.status(201).json({});
 });
 
-// --- ROTA DE HEALTH CHECK ---
+// Rota de Health Check
 app.get('/', (req, res) => {
   res.send('Havaianas Backend Online! 🚀');
 });
@@ -59,39 +58,41 @@ const io = socketIo(server, {
 
 // --- LÓGICA DE EVENTOS ---
 io.on('connection', (socket) => {
-  console.log(`Novo dispositivo conectado: ${socket.id}`);
+  console.log(`Dispositivo conectado: ${socket.id}`);
 
-  // Evento: Novo pedido criado (Vendedor -> Estoquista)
   socket.on('novo_pedido', (pedido) => {
     console.log('Pedido recebido:', pedido);
     
-    // 1. Envia via Socket (Para quem estiver com o app aberto na mão)
+    // 1. Socket (Tempo real - App aberto)
     io.emit('atualizar_pedidos', pedido);
 
-    // 2. Dispara Push Notification (Para quem estiver com celular no bolso/bloqueado)
+    // 2. Push (Segundo plano - App fechado/bloqueado)
     const payload = JSON.stringify({
       title: '📦 Novo Pedido Havaianas!',
-      body: `${pedido.solicitante} solicitou ${pedido.itens.length} item(s).`,
-      url: '/estoque' // URL que abrirá ao clicar
+      body: `${pedido.solicitante} solicitou ${pedido.itens?.length || 0} item(s).`,
+      // Ajuste na URL: '/' garante que abra na raiz do seu site sem erro de rota
+      url: '/' 
     });
 
+    console.log(`Disparando Push para ${subscriptions.length} inscritos...`);
+
     subscriptions.forEach(sub => {
-      webpush.sendNotification(sub, payload).catch(err => {
-        console.error('Erro ao enviar Push:', err.endpoint);
-        // Remove inscrição inválida/expirada
-        if (err.statusCode === 410) {
+      webpush.sendNotification(sub, payload, {
+        TTL: 60, // Tempo de vida da notificação (60 segundos)
+        urgency: 'high' // Prioridade máxima para atravessar o modo de economia
+      }).catch(err => {
+        console.error('Erro ao enviar Push:', err.statusCode);
+        // Se o status for 410 (Gone) ou 404, a inscrição não é mais válida
+        if (err.statusCode === 410 || err.statusCode === 404) {
           subscriptions = subscriptions.filter(s => s.endpoint !== sub.endpoint);
         }
       });
     });
   });
 
-  // Evento: Status atualizado (Estoquista -> Vendedor)
   socket.on('status_pedido', (dados) => {
     console.log('Atualização de status:', dados);
     io.emit('pedido_atualizado', dados);
-
-    // Opcional: Enviar push para o vendedor avisando que o pedido está pronto
   });
 
   socket.on('disconnect', (reason) => {
