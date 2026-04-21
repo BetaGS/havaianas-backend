@@ -20,7 +20,7 @@ webpush.setVapidDetails(
   privateVapidKey
 );
 
-// Armazenamento temporário de inscrições
+// Armazenamento temporário de inscrições (Zera no restart do Render)
 let subscriptions = [];
 
 // Rota para o celular se inscrever
@@ -63,26 +63,25 @@ io.on('connection', (socket) => {
   socket.on('novo_pedido', (pedido) => {
     console.log('Pedido recebido:', pedido);
     
-    // 1. Socket (Tempo real - App aberto)
+    // 1. Socket (Tempo real - Para quem está com app aberto)
     io.emit('atualizar_pedidos', pedido);
 
-    // 2. Push (Segundo plano - App fechado/bloqueado)
+    // 2. Push Notification (Segundo plano - Atravessa o bloqueio de tela)
     const payload = JSON.stringify({
       title: '📦 Novo Pedido Havaianas!',
       body: `${pedido.solicitante} solicitou ${pedido.itens?.length || 0} item(s).`,
-      // Ajuste na URL: '/' garante que abra na raiz do seu site sem erro de rota
-      url: '/' 
+      url: '/',
+      pedido: pedido // IMPORTANTE: Envia o objeto completo do pedido via Push
     });
 
     console.log(`Disparando Push para ${subscriptions.length} inscritos...`);
 
     subscriptions.forEach(sub => {
       webpush.sendNotification(sub, payload, {
-        TTL: 60, // Tempo de vida da notificação (60 segundos)
-        urgency: 'high' // Prioridade máxima para atravessar o modo de economia
+        TTL: 60, 
+        urgency: 'high'
       }).catch(err => {
         console.error('Erro ao enviar Push:', err.statusCode);
-        // Se o status for 410 (Gone) ou 404, a inscrição não é mais válida
         if (err.statusCode === 410 || err.statusCode === 404) {
           subscriptions = subscriptions.filter(s => s.endpoint !== sub.endpoint);
         }
