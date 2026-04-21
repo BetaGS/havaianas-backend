@@ -70,7 +70,7 @@ io.on('connection', (socket) => {
     const payload = JSON.stringify({
       title: '📦 Novo Pedido Havaianas!',
       body: `${pedido.solicitante} solicitou ${pedido.itens?.length || 0} item(s).`,
-      url: '/',
+      url: '/estoque',
       pedido: pedido // IMPORTANTE: Envia o objeto completo do pedido via Push
     });
 
