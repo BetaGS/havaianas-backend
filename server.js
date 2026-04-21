@@ -3,10 +3,15 @@ const http = require('http');
 const socketIo = require('socket.io');
 const cors = require('cors');
 const webpush = require('web-push');
+const mongoose = require('mongoose');
+
+// Importação das rotas e controllers (Certifique-se de criar os arquivos abaixo)
+const authRoutes = require('./src/routes/authRoutes');
+const User = require('./src/models/User'); 
 
 const app = express();
 
-// Middlewares
+// --- MIDDLEWARES ---
 app.use(cors());
 app.use(express.json());
 
@@ -20,83 +25,73 @@ webpush.setVapidDetails(
   privateVapidKey
 );
 
-// Armazenamento temporário de inscrições (Zera no restart do Render)
-let subscriptions = [];
+// --- CONEXÃO COM BANCO DE DADOS ---
+// No Render, adicione a variável de ambiente MONGO_URI
+const MONGO_URI = process.env.MONGO_URI || "SUA_URL_DO_MONGODB_ATLAS_AQUI"; 
 
-// Rota para o celular se inscrever
-app.post('/subscribe', (req, res) => {
-  const subscription = req.body;
-  
-  // Evitar duplicados por endpoint
-  const exists = subscriptions.find(s => s.endpoint === subscription.endpoint);
-  if (!exists) {
-    subscriptions.push(subscription);
-    console.log('✅ Novo dispositivo inscrito para notificações push');
-  }
-  
-  res.status(201).json({});
-});
+mongoose.connect(MONGO_URI)
+  .then(() => console.log("✅ MongoDB Conectado"))
+  .catch(err => console.error("❌ Erro ao conectar MongoDB:", err));
 
-// Rota de Health Check
+// --- ROTAS ---
+app.use('/api/auth', authRoutes);
+
 app.get('/', (req, res) => {
-  res.send('Havaianas Backend Online! 🚀');
+  res.send('Havaianas Backend Online com Auth! 🚀');
 });
 
 const server = http.createServer(app);
-
-// Configuração do Socket.io
 const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
-    credentials: true
-  },
-  transports: ['polling', 'websocket'], 
-  pingTimeout: 60000,
-  pingInterval: 25000
+  cors: { origin: "*", methods: ["GET", "POST"] },
+  transports: ['polling', 'websocket']
 });
 
-// --- LÓGICA DE EVENTOS ---
+// --- LÓGICA DE EVENTOS (SOCKET + PUSH) ---
 io.on('connection', (socket) => {
   console.log(`Dispositivo conectado: ${socket.id}`);
 
-  socket.on('novo_pedido', (pedido) => {
+  socket.on('novo_pedido', async (pedido) => {
     console.log('Pedido recebido:', pedido);
     
-    // 1. Socket (Tempo real - Para quem está com app aberto)
+    // 1. Socket (Tempo real - App aberto)
     io.emit('atualizar_pedidos', pedido);
 
-    // 2. Push Notification (Segundo plano - Atravessa o bloqueio de tela)
-    const payload = JSON.stringify({
-      title: '📦 Novo Pedido Havaianas!',
-      body: `${pedido.solicitante} solicitou ${pedido.itens?.length || 0} item(s).`,
-      url: '/estoque',
-      pedido: pedido // IMPORTANTE: Envia o objeto completo do pedido via Push
-    });
-
-    console.log(`Disparando Push para ${subscriptions.length} inscritos...`);
-
-    subscriptions.forEach(sub => {
-      webpush.sendNotification(sub, payload, {
-        TTL: 60, 
-        urgency: 'high'
-      }).catch(err => {
-        console.error('Erro ao enviar Push:', err.statusCode);
-        if (err.statusCode === 410 || err.statusCode === 404) {
-          subscriptions = subscriptions.filter(s => s.endpoint !== sub.endpoint);
-        }
+    // 2. Push Notification (Apenas para ESTOQUISTAS logados)
+    try {
+      const estoquistas = await User.find({ 
+        cargo: 'estoquista', 
+        pushSubscription: { $ne: null } 
       });
-    });
+
+      const payload = JSON.stringify({
+        title: '📦 Novo Pedido Havaianas!',
+        body: `${pedido.solicitante} enviou uma nova solicitação.`,
+        url: '/estoque',
+        pedido: pedido
+      });
+
+      estoquistas.forEach(user => {
+        webpush.sendNotification(user.pushSubscription, payload, {
+          TTL: 60,
+          urgency: 'high'
+        }).catch(err => {
+          // Se o token for inválido (410 GONE), removemos do banco
+          if (err.statusCode === 410 || err.statusCode === 404) {
+            User.findByIdAndUpdate(user._id, { pushSubscription: null }).exec();
+          }
+        });
+      });
+      console.log(`Push enviado para ${estoquistas.length} estoquistas.`);
+    } catch (error) {
+      console.error("Erro ao processar notificações push:", error);
+    }
   });
 
   socket.on('status_pedido', (dados) => {
-    console.log('Atualização de status:', dados);
     io.emit('pedido_atualizado', dados);
   });
 
-  socket.on('disconnect', (reason) => {
-    console.log(`Dispositivo desconectado: ${socket.id} - ${reason}`);
-  });
+  socket.on('disconnect', () => console.log("Dispositivo desconectado"));
 });
 
 const PORT = process.env.PORT || 3001;
