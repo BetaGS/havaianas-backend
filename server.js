@@ -4,8 +4,8 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 const webpush = require('web-push');
 const mongoose = require('mongoose');
+require('dotenv').config();
 
-// Importação das rotas e controllers (Certifique-se de criar os arquivos abaixo)
 const authRoutes = require('./src/routes/authRoutes');
 const User = require('./src/models/User'); 
 
@@ -16,57 +16,63 @@ app.use(cors());
 app.use(express.json());
 
 // --- CONFIGURAÇÃO WEB PUSH ---
-const publicVapidKey = 'BGJ6TON0nIcsUzfW7oD-mjyziRuEIz7WbRen612Ke6S7GmS_AbzZuQ8wKeIYNZsLUmzXNqfnQHWIyvRLKYDVhSM';
-const privateVapidKey = '0_PV3hASQU70wlmus8i9gBGBovXvrt4Av4qJSxe6GkY';
+const publicVapidKey = process.env.PUBLIC_VAPID_KEY || 'BGJ6TON0nIcsUzfW7oD-mjyziRuEIz7WbRen612Ke6S7GmS_AbzZuQ8wKeIYNZsLUmzXNqfnQHWIyvRLKYDVhSM';
+const privateVapidKey = process.env.PRIVATE_VAPID_KEY || '0_PV3hASQU70wlmus8i9gBGBovXvrt4Av4qJSxe6GkY';
 
 webpush.setVapidDetails(
-  'mailto:seu-email@exemplo.com',
+  'mailto:suporte@seudominio.com',
   publicVapidKey,
   privateVapidKey
 );
 
 // --- CONEXÃO COM BANCO DE DADOS ---
-// No Render, adicione a variável de ambiente MONGO_URI
-const MONGO_URI = process.env.MONGO_URI || "SUA_URL_DO_MONGODB_ATLAS_AQUI"; 
+// Prioriza a variável do Render, se não existir, usa a sua string direta
+const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://BetaGS:Bielssmv711@cluster0.sgrja1k.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"; 
 
 mongoose.connect(MONGO_URI)
-  .then(() => console.log("✅ MongoDB Conectado"))
-  .catch(err => console.error("❌ Erro ao conectar MongoDB:", err));
+  .then(() => console.log("✅ MongoDB Conectado (BetaGS Cluster)"))
+  .catch(err => console.error("❌ Erro crítico ao conectar MongoDB:", err));
 
 // --- ROTAS ---
 app.use('/api/auth', authRoutes);
 
 app.get('/', (req, res) => {
-  res.send('Havaianas Backend Online com Auth! 🚀');
+  res.send('Havaianas Backend Online 🚀');
 });
 
 const server = http.createServer(app);
+
+// --- CONFIGURAÇÃO SOCKET.IO ---
 const io = socketIo(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-  transports: ['polling', 'websocket']
+  cors: { 
+    origin: "*", 
+    methods: ["GET", "POST"] 
+  },
+  transports: ['websocket', 'polling']
 });
 
 // --- LÓGICA DE EVENTOS (SOCKET + PUSH) ---
 io.on('connection', (socket) => {
-  console.log(`Dispositivo conectado: ${socket.id}`);
+  console.log(`📡 Novo dispositivo conectado: ${socket.id}`);
 
   socket.on('novo_pedido', async (pedido) => {
-    console.log('Pedido recebido:', pedido);
+    console.log('📦 Pedido recebido no servidor:', pedido);
     
-    // 1. Socket (Tempo real - App aberto)
-    io.emit('atualizar_pedidos', pedido);
+    // 1. Socket (Entrega em tempo real)
+    io.emit('pedido_recebido', pedido);
 
-    // 2. Push Notification (Apenas para ESTOQUISTAS logados)
+    // 2. Push Notification (Acordar celular no bolso)
     try {
+      // Busca estoquistas com inscrição ativa
       const estoquistas = await User.find({ 
         cargo: 'estoquista', 
-        pushSubscription: { $ne: null } 
+        pushSubscription: { $exists: true, $ne: null } 
       });
 
       const payload = JSON.stringify({
-        title: '📦 Novo Pedido Havaianas!',
-        body: `${pedido.solicitante} enviou uma nova solicitação.`,
-        url: '/estoque',
+        title: '📦 NOVO PEDIDO!',
+        body: `${pedido.solicitante} enviou uma nova lista.`,
+        url: '/estoquista',
         pedido: pedido
       });
 
@@ -75,26 +81,29 @@ io.on('connection', (socket) => {
           TTL: 60,
           urgency: 'high'
         }).catch(err => {
-          // Se o token for inválido (410 GONE), removemos do banco
           if (err.statusCode === 410 || err.statusCode === 404) {
+            console.log(`Limpando token inválido de: ${user.username}`);
             User.findByIdAndUpdate(user._id, { pushSubscription: null }).exec();
           }
         });
       });
-      console.log(`Push enviado para ${estoquistas.length} estoquistas.`);
+      
+      console.log(`🔔 Push enviado para ${estoquistas.length} dispositivos.`);
     } catch (error) {
-      console.error("Erro ao processar notificações push:", error);
+      console.error("❌ Erro no Push:", error);
     }
   });
 
-  socket.on('status_pedido', (dados) => {
-    io.emit('pedido_atualizado', dados);
+  socket.on('confirmar_conclusao', (dados) => {
+    io.emit('pedido_concluido', dados);
   });
 
-  socket.on('disconnect', () => console.log("Dispositivo desconectado"));
+  socket.on('disconnect', () => {
+    console.log(`🔌 Dispositivo desconectado`);
+  });
 });
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Servidor rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor Havaianas rodando na porta ${PORT}`);
 });
