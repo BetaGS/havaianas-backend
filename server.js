@@ -4,8 +4,16 @@ const socketIo = require('socket.io');
 const cors = require('cors');
 const webpush = require('web-push');
 const mongoose = require('mongoose');
-require('dotenv').config();
 
+// Tenta carregar o dotenv apenas se ele estiver instalado (evita erro MODULE_NOT_FOUND)
+try {
+    require('dotenv').config();
+} catch (e) {
+    console.log("Aviso: dotenv não encontrado, usando variáveis de ambiente do sistema.");
+}
+
+// IMPORTANTE: Confira se no VS Code as pastas se chamam exatamente 'src', 'routes' e 'models'
+// E se os arquivos são 'authRoutes.js' e 'User.js'
 const authRoutes = require('./src/routes/authRoutes');
 const User = require('./src/models/User'); 
 
@@ -26,12 +34,15 @@ webpush.setVapidDetails(
 );
 
 // --- CONEXÃO COM BANCO DE DADOS ---
-// Prioriza a variável do Render, se não existir, usa a sua string direta
 const MONGO_URI = process.env.MONGO_URI || "mongodb+srv://BetaGS:Bielssmv711@cluster0.sgrja1k.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0"; 
 
+// Opções de conexão para maior estabilidade
 mongoose.connect(MONGO_URI)
   .then(() => console.log("✅ MongoDB Conectado (BetaGS Cluster)"))
-  .catch(err => console.error("❌ Erro crítico ao conectar MongoDB:", err));
+  .catch(err => {
+    console.error("❌ Erro crítico ao conectar MongoDB:", err.message);
+    process.exit(1); // Fecha o app se não conseguir conectar ao banco
+  });
 
 // --- ROTAS ---
 app.use('/api/auth', authRoutes);
@@ -58,37 +69,38 @@ io.on('connection', (socket) => {
   socket.on('novo_pedido', async (pedido) => {
     console.log('📦 Pedido recebido no servidor:', pedido);
     
-    // 1. Socket (Entrega em tempo real)
+    // 1. Socket (Entrega em tempo real para quem está com o site aberto)
     io.emit('pedido_recebido', pedido);
 
     // 2. Push Notification (Acordar celular no bolso)
     try {
-      // Busca estoquistas com inscrição ativa
+      // Busca estoquistas com inscrição ativa no banco
       const estoquistas = await User.find({ 
         cargo: 'estoquista', 
         pushSubscription: { $exists: true, $ne: null } 
       });
 
-      const payload = JSON.stringify({
-        title: '📦 NOVO PEDIDO!',
-        body: `${pedido.solicitante} enviou uma nova lista.`,
-        url: '/estoquista',
-        pedido: pedido
-      });
-
-      estoquistas.forEach(user => {
-        webpush.sendNotification(user.pushSubscription, payload, {
-          TTL: 60,
-          urgency: 'high'
-        }).catch(err => {
-          if (err.statusCode === 410 || err.statusCode === 404) {
-            console.log(`Limpando token inválido de: ${user.username}`);
-            User.findByIdAndUpdate(user._id, { pushSubscription: null }).exec();
-          }
+      if (estoquistas.length > 0) {
+        const payload = JSON.stringify({
+          title: '📦 NOVO PEDIDO!',
+          body: `${pedido.solicitante || 'Um vendedor'} enviou uma nova lista.`,
+          url: '/estoquista',
+          pedido: pedido
         });
-      });
-      
-      console.log(`🔔 Push enviado para ${estoquistas.length} dispositivos.`);
+
+        estoquistas.forEach(user => {
+          webpush.sendNotification(user.pushSubscription, payload, {
+            TTL: 60,
+            urgency: 'high'
+          }).catch(err => {
+            if (err.statusCode === 410 || err.statusCode === 404) {
+              console.log(`Limpando token expirado de: ${user.username}`);
+              User.findByIdAndUpdate(user._id, { pushSubscription: null }).exec();
+            }
+          });
+        });
+        console.log(`🔔 Push enviado para ${estoquistas.length} dispositivos.`);
+      }
     } catch (error) {
       console.error("❌ Erro no Push:", error);
     }
@@ -105,5 +117,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 Servidor Havaianas rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor rodando na porta ${PORT}`);
 });
